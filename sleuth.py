@@ -1,24 +1,26 @@
 #!/bin/python3
 import requests
+import random
 import json
 import base64
 import ctl_parser
 from OpenSSL import crypto
 
-# TODO: it would be better if i chose random entries instead of going in order... implement a random mode because i doubt people will search through the whole thing anyways
 # TODO: I should make this multithreaded
 
 # CTSleuth
 #https://ct.googleapis.com/logs/argon2020/ct/v1/get-entries?start=0&end=10
 CTL_ENDPOINT="https://ct.googleapis.com/logs/argon2020/ct/v1"
 SHARD_SIZE=31
+CTL_LOG_SIZE=961984010
 
-class x509Name_hashable(crypto.X509Name):
-    def __init__(self, x509Name_object):
-        super().__init__(x509Name_object)
+class x509Name_hashable():
+    def __init__(self, x509Name_object, shard_offset=0):
+        self.shard_offset = shard_offset
+        self.object = x509Name_object
 
     def __hash__(self):
-        return self.hash()
+        return self.object.hash()
 
 
 def get_shards(offset, size=SHARD_SIZE):
@@ -57,20 +59,38 @@ def x509_extract(x509_object):
     return x509_object.get_issuer()
 
 def print_features(features):
+    print("CTL_ENDPOINT: {0}".format(CTL_ENDPOINT))
+    print("SHARD_SIZE: {0}".format(SHARD_SIZE))
     for f in features:
-        out = ",".join(["=".join(str(e) for e in t) for t in f.get_components()])
+        out = str(f.shard_offset) + ": " + ",".join(["=".join(str(e) for e in t) for t in f.object.get_components()])
         print(out)
 
 def main():
-    print("CTSleuth")
     features = set()
-    for i in range(100):
-        entries = get_shards(i*SHARD_SIZE)
-        for entry in entries:
-            entry = parse_entry(entry)
-            for x509_object in entry:
-                feature = x509Name_hashable(x509_extract(x509_object))
-                features.add(feature)
+    no_shards = int(input("How many shards would you like to look through? "))
+    random_mode = input("Would you like to enable random mode? ").lower() in ['y','yes']
+    if not random_mode:
+        # TODO: would be usefull to do a "merge sort" style approach to finding treasure
+        starting_offset=int(input("which offset would you like to start off with? ")) 
+        print("Random mode disabled - looking for {0} shards starting from {1}".format(no_shards, starting_offset))
+        for i in range(no_shards):
+            offset = starting_offset + i*SHARD_SIZE
+            entries = get_shards(offset)
+            for entry in entries:
+                entry = parse_entry(entry)
+                for x509_object in entry:
+                    feature = x509Name_hashable(x509_extract(x509_object), offset)
+                    features.add(feature)
+    else:
+        print("Random mode enabled - looking for {0} shards from 0 to tree size {1}".format(no_shards, CTL_LOG_SIZE))
+        for i in range(no_shards):
+            offset = random.randint(0, CTL_LOG_SIZE)
+            entries = get_shards(offset)
+            for entry in entries:
+                entry = parse_entry(entry)
+                for x509_object in entry:
+                    feature = x509Name_hashable(x509_extract(x509_object), offset)
+                    features.add(feature)
     print_features(features)
     
 
