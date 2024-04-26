@@ -1,17 +1,19 @@
-#!/bin/python3
-import requests
+#!/usr/bin/env python3
 import random
+import asyncio
+import math
 import json
 import base64
 import ctl_parser
+import httpx
 from OpenSSL import crypto
 
-# TODO: I should make this multithreaded
+# TODO: use argparse library to make it a proper CLI tool
 
 # CTSleuth
-#https://ct.googleapis.com/logs/argon2020/ct/v1/get-entries?start=0&end=10
 CTL_ENDPOINT="https://ct.googleapis.com/logs/argon2020/ct/v1"
 SHARD_SIZE=31
+DEFAULT_ASYNC_SHARDS=10
 CTL_LOG_SIZE=961984010
 
 class x509Name_hashable():
@@ -23,14 +25,24 @@ class x509Name_hashable():
         return self.object.hash()
 
 
-def get_shards(offset, size=SHARD_SIZE):
-    params = {
-        'start': str(offset),
-        'end': str(offset+size),
-    }
+def get_shards(offsets, size=SHARD_SIZE):
+    shards = []
+    responses = asyncio.run(get_shards_responses(offsets,size))
+    for response in responses:
+        shards += json.loads(response.text)['entries']
+    return shards
 
-    response = requests.get(CTL_ENDPOINT+"/get-entries", params=params)
-    return json.loads(response.text)['entries']
+async def get_shards_responses(offsets, size=SHARD_SIZE):
+    responses = []
+    async with httpx.AsyncClient() as client:
+        for offset in offsets:
+            params = {
+                'start': str(offset),
+                'end': str(offset+size),
+            }
+            responses += [await client.get(CTL_ENDPOINT+"/get-entries", params=params)]
+
+    return responses
 
 def parse_entry(entry):
     
@@ -66,31 +78,21 @@ def print_features(features):
         print(out)
 
 def main():
+    total_shards = int(input("How many shards would you like to look through? "))
     features = set()
-    no_shards = int(input("How many shards would you like to look through? "))
-    random_mode = input("Would you like to enable random mode? ").lower() in ['y','yes']
-    if not random_mode:
-        # TODO: would be usefull to do a "merge sort" style approach to finding treasure
-        starting_offset=int(input("which offset would you like to start off with? ")) 
-        print("Random mode disabled - looking for {0} shards starting from {1}".format(no_shards, starting_offset))
-        for i in range(no_shards):
-            offset = starting_offset + i*SHARD_SIZE
-            entries = get_shards(offset)
-            for entry in entries:
-                entry = parse_entry(entry)
-                for x509_object in entry:
-                    feature = x509Name_hashable(x509_extract(x509_object), offset)
-                    features.add(feature)
-    else:
-        print("Random mode enabled - looking for {0} shards from 0 to tree size {1}".format(no_shards, CTL_LOG_SIZE))
-        for i in range(no_shards):
-            offset = random.randint(0, CTL_LOG_SIZE)
-            entries = get_shards(offset)
-            for entry in entries:
-                entry = parse_entry(entry)
-                for x509_object in entry:
-                    feature = x509Name_hashable(x509_extract(x509_object), offset)
-                    features.add(feature)
+    # TODO: would be usefull to do a "merge sort" style approach to finding treasure
+    print("looking for {0} shards from 0 to tree size {1}".format(total_shards, CTL_LOG_SIZE))
+    for i in range(math.ceil(total_shards/DEFAULT_ASYNC_SHARDS)):
+        async_shards = min(total_shards, DEFAULT_ASYNC_SHARDS)
+        offsets = [random.randint(0, CTL_LOG_SIZE) for _ in range(async_shards)]
+        entries = get_shards(offsets)
+        total_shards -= DEFAULT_ASYNC_SHARDS
+        for entry in entries:
+            entry = parse_entry(entry)
+            for x509_object in entry:
+                # The offsets is wrong, just a temporary fix
+                feature = x509Name_hashable(x509_extract(x509_object), offsets[0])
+                features.add(feature)
     print_features(features)
     
 
